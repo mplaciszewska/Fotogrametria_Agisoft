@@ -192,48 +192,64 @@ class mainApp(QtWidgets.QDialog):
                 label, y_coord, x_coord, z_coord = line.split()
                 marker = chunk.addMarker()
                 marker.label = label
-                marker.reference.location = float(x_coord), float(y_coord), float(z_coord) - 31.13
+                marker.reference.location = float(x_coord), float(y_coord), float(z_coord) - 20.39
                 loaded_markers.append(marker)
         
-            # photo alignment
-            chunk.matchPhotos(downscale=photo_downscale) 
+            # photo alignment on lowest 
+            chunk.matchPhotos(downscale=8) 
             chunk.alignCameras() 
                 
             # detect markers
             marker_type = Metashape.TargetType.CrossTarget
-            chunk.detectMarkers(marker_type)
+            chunk.detectMarkers(target_type=marker_type, tolerance=10.0, maximum_residual=3.0)
 
-            # transform detected markers
             for marker in chunk.markers:
                 if marker.position:
                     marker_position_transformed = chunk.crs.project(chunk.transform.matrix.mulp(marker.position))
                     marker.reference.location = marker_position_transformed
 
-            # remove distant detected markers
             def calculate_distance(coord1, coord2):
                 return math.sqrt(sum((a - b) ** 2 for a, b in zip(coord1, coord2)))
 
-            def remove_distant_points(distance):
-                reference_coords = [marker.reference.location for marker in loaded_markers if marker.reference.location]
+            def assign_and_remove_markers(distance_threshold):
+                reference_markers = [marker for marker in loaded_markers if marker.reference.location]
+                reference_coords = [marker.reference.location for marker in reference_markers]
 
                 for marker in chunk.markers:
-                    if marker in loaded_markers:
+                    if marker in reference_markers: 
                         continue
-                    detected_location = marker.reference.location
-                    if detected_location:
-                        distances = [
-                            calculate_distance(detected_location, ref_coord) for ref_coord in reference_coords
-                        ]
-                        if min(distances) > distance:
-                            chunk.remove(marker) 
 
-            remove_distant_points(10)
+                    if marker.reference.location:
+                        distances = [
+                            (calculate_distance(marker.reference.location, ref_coord), ref_marker)
+                            for ref_coord, ref_marker in zip(reference_coords, reference_markers)
+                        ]
+
+                        closest_distance, closest_marker = min(distances, key=lambda x: x[0])
+
+                        if closest_distance <= distance_threshold:
+                            marker.label = closest_marker.label
+                        else:
+                            chunk.remove(marker)
+                            
+                for ref_marker in reference_markers:
+                    chunk.remove(ref_marker)
+
+            assign_and_remove_markers(5)
+
+            # second photo alignment on chosen downscale for detected markers
+            chunk.resetRegion()
+            for camera in chunk.cameras:
+                camera.transform = None
+            chunk.matchPhotos(downscale=photo_downscale) 
+            chunk.alignCameras() 
 
         # generate depth maps if not already generated
-        if chunk.depth_maps is None: 
-            chunk.buildDepthMaps(downscale=depth_map_downscale, filter_mode=Metashape.MildFiltering)
-        else:
-            print("Depth maps already generated.")
+        if generate_point_cloud or generate_model3d:
+            if chunk.depth_maps is None: 
+                chunk.buildDepthMaps(downscale=depth_map_downscale, filter_mode=Metashape.MildFiltering)
+            else:
+                print("Depth maps already generated.")
         
         # generate point cloud and 3D model
         if generate_point_cloud:
